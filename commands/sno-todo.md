@@ -6,6 +6,8 @@ tools:
   bash: true
   grep: true
   glob: true
+  write: true
+  edit: true
 ---
 
 <objective>

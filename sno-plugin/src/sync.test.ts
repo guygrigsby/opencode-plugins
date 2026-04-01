@@ -93,6 +93,67 @@ describe("syncContent", () => {
     }
   });
 
+  it("bumps timestamp without rewriting content on 304 Not Modified", async () => {
+    // Pre-populate cache and etags with an old timestamp
+    const cachedContent = "# Existing cached principles";
+    await writeFile(join(cacheDir, "CLAUDE.md"), cachedContent, "utf-8");
+    const oldTimestamp = Date.now() - 48 * 60 * 60 * 1000; // 48h ago (stale)
+    const etags = {
+      "CLAUDE.md": { etag: '"existing-etag"', lastFetch: oldTimestamp },
+    };
+    await writeFile(
+      join(cacheDir, ".etags.json"),
+      JSON.stringify(etags),
+      "utf-8",
+    );
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      // Verify If-None-Match header is sent
+      expect(init?.headers).toBeDefined();
+      const h = init!.headers as Record<string, string>;
+      expect(h["If-None-Match"]).toBe('"existing-etag"');
+      return new Response(null, { status: 304 });
+    });
+
+    try {
+      await syncContent(cacheDir);
+
+      // Content should be unchanged
+      const content = await readFile(join(cacheDir, "CLAUDE.md"), "utf-8");
+      expect(content).toBe(cachedContent);
+
+      // Timestamp should be bumped
+      const updatedEtags = JSON.parse(
+        await readFile(join(cacheDir, ".etags.json"), "utf-8"),
+      );
+      expect(updatedEtags["CLAUDE.md"].lastFetch).toBeGreaterThan(oldTimestamp);
+      expect(updatedEtags["CLAUDE.md"].etag).toBe('"existing-etag"');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("falls back to cache on non-OK HTTP status (e.g. 500)", async () => {
+    const cachedContent = "# Cached principles";
+    await writeFile(join(cacheDir, "CLAUDE.md"), cachedContent, "utf-8");
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () =>
+      new Response("Internal Server Error", { status: 500 }),
+    );
+
+    try {
+      await syncContent(cacheDir);
+
+      // Cached file should still be intact
+      const content = await readFile(join(cacheDir, "CLAUDE.md"), "utf-8");
+      expect(content).toBe(cachedContent);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("writes bundled fallback when fetch fails and no cache exists", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(async () => {
